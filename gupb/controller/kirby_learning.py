@@ -1,8 +1,6 @@
 import os.path
-import traceback
-# import traceback
 from collections import defaultdict
-from itertools import chain
+from itertools import chain, product
 from queue import Queue
 from typing import Callable
 
@@ -34,15 +32,19 @@ POSSIBLE_ACTIONS = [
     characters.Action.TURN_RIGHT,
     characters.Action.STEP_FORWARD,
     characters.Action.ATTACK,
+    characters.Action.STEP_RIGHT,
+    characters.Action.STEP_LEFT,
+    characters.Action.STEP_BACKWARD,
+    characters.Action.DO_NOTHING,
 ]
 ROUNDS_NO = 3001
 EPSILON = 0.0
-LR_ARRAY: np.ndarray[float] = 1e-9 * np.cumprod(
-    np.full(shape=(ROUNDS_NO,), fill_value=0.9975)
-)
-BOTS_NO = 5
-MAP_PADDING = 3
-POLICIES_NUM = 6
+LR_ARRAY: np.ndarray[float] = 5e-7 * (np.cumprod(
+    np.full(shape=(ROUNDS_NO,), fill_value=0.99)
+)+1e-4)
+BOTS_NO = 5  # 12
+MAP_PADDING = 2
+POLICIES_NUM = 7
 DIRECTIONS_NUM = 4
 
 DISCOUNT_FACTOR_ARRAY = np.linspace(0.98, 0.98, ROUNDS_NO)
@@ -60,13 +62,13 @@ weapons_dict = {
 }
 
 weapons_hierarchy: dict[WeaponDescription, int] = {
-    Knife().description(): -10,
-    Sword().description(): 3,
+    Knife().description(): -80,
+    Sword().description(): 1,
     WeaponDescription(name="bow_loaded"): 3,
     WeaponDescription(name="bow_unloaded"): 3,
     Axe().description(): 3,
-    Amulet().description(): 4,
-    Scroll().description(): 5,
+    Amulet().description(): 5,
+    Scroll().description(): 6,
 }
 
 weapons_names_dict: dict[WeaponDescription, Weapon] = {
@@ -109,6 +111,23 @@ dir_to_coords_change = {
     Facing.LEFT: lambda x, y: (-y, -x),
     Facing.RIGHT: lambda x, y: (y, x),
 }
+neighbourhood_coords_list = [
+    (-2, 0),
+    (-1, 0),
+    (0, 0),
+    (-1, -1),
+    (-1, 1),
+    (0, -2),
+    (0, -1),
+    (0, 0),
+    (0, 1),
+    (0, 2),
+    (1, 0),
+    (1, 1),
+    (1, -1),
+    (2, 0),
+]
+
 
 directions_to_indices = {Facing.UP: 0, Facing.LEFT: 1, Facing.DOWN: 2, Facing.RIGHT: 3}
 indices_to_directions = {val: key for key, val in directions_to_indices.items()}
@@ -120,8 +139,20 @@ def weapon_power(weapon_name):
     return getattr(weapons_names_dict[weapon_name].cut_effect(), "damage", 5)
 
 
+def neighbourhood_4(position: tuple[int, int]):
+    return [
+        (position[0] + i, position[1] + j)
+        for i, j in [(0, -1), (-1, 0), (0, 1), (1, 0)]
+    ]  # UP, LEFT, DOWN, RIGHT
+
+
+def distance_x_y(x: tuple[float, float]):
+    return abs(x[0]) + abs(x[1])
+
+
 class KirbyLearningController(controller.Controller):
     def __init__(self, first_name: str = "Kirby"):
+        self.characters_no = None
         self.prev_attack_effects = None
         self.first_name: str = first_name
         self.map: torch.Tensor = torch.zeros((0,))
@@ -130,7 +161,7 @@ class KirbyLearningController(controller.Controller):
         self.seen: torch.Tensor = torch.zeros((0,))
         self.menhir: tuple = (0, 0)
         self.prev_map = None
-        self.prev_actions = []
+        self.prev_actions: list[int] = []
         self.mist: np.ndarray = np.zeros((0,))
         self.found_menhir: bool = False
         self.weapon = Knife().description()
@@ -220,9 +251,9 @@ class KirbyLearningController(controller.Controller):
             np.random.randint(self.map.shape[1] - 2 * MAP_PADDING),
         )
         while (
-                not self.map[self.menhir[0] + MAP_PADDING, self.menhir[1] + MAP_PADDING]
-                or self.seen[self.menhir]
-                or self.mist[self.menhir]
+            not self.map[self.menhir[0] + MAP_PADDING, self.menhir[1] + MAP_PADDING]
+            or self.seen[self.menhir]
+            or self.mist[self.menhir]
         ):
             self.menhir = (
                 np.random.randint(self.map.shape[0] - 2 * MAP_PADDING),
@@ -235,7 +266,6 @@ class KirbyLearningController(controller.Controller):
                 (
                     self.map.shape[0] - 2 * MAP_PADDING,
                     self.map.shape[1] - 2 * MAP_PADDING,
-                    DIRECTIONS_NUM,
                 ),
                 fill_value=float("inf"),
             ),
@@ -243,126 +273,132 @@ class KirbyLearningController(controller.Controller):
         )
 
     def travel(
-            self, my_position: tuple[int, int], my_direction: Facing
+        self, my_position: tuple[int, int], my_direction: Facing
     ) -> characters.Action:
         distances, queue = self.a_star_setup()
-        for i in range(DIRECTIONS_NUM):
-            distances[(*self.menhir, i)] = 0
-            queue.put((self.menhir, i, 0))
+        distances[self.menhir] = 0
+        queue.put((self.menhir, 0))
         return self.path_finding(queue, distances, my_position, my_direction)
 
     def hide(
-            self, my_position: tuple[int, int], my_direction: Facing
+        self, my_position: tuple[int, int], my_direction: Facing
     ) -> characters.Action:
         distances, queue = self.a_star_setup()
         for tree in self.trees:
-            for i in range(DIRECTIONS_NUM):
-                distances[(*tree, i)] = 0
-                queue.put((tree, i, 0))
+            distances[tree] = 0
+            queue.put((tree, 0))
         return self.path_finding(queue, distances, my_position, my_direction)
 
     def bigger_weapons(
-            self, my_position: tuple[int, int], my_direction: Facing
+        self, my_position: tuple[int, int], my_direction: Facing
     ) -> characters.Action:
         distances, queue = self.a_star_setup()
-        knives = []
         for coord in self.loot.keys():
             weapon_value = weapons_hierarchy[self.loot[coord]]
-            if weapon_value < 0:
-                knives.append(coord)
-            elif weapon_value >= weapons_hierarchy[self.weapon] and weapons_names_dict[self.weapon].droppable():
-                for i in range(DIRECTIONS_NUM):
-                    distances[(*coord, i)] = -weapon_value * 10
-                    queue.put((coord, i, 0))
+            if (
+                weapon_value >= weapons_hierarchy[self.weapon]
+                and self.weapon.name != "scroll"
+            ):
+                distances[coord] = -weapon_value * 10
+                queue.put((coord, -weapon_value * 10))
 
-        return self.path_finding(queue, distances, my_position, my_direction, knives)
+        return self.path_finding(queue, distances, my_position, my_direction)
 
     def get_consumables(
-            self, my_position: tuple[int, int], my_direction: Facing
+        self, my_position: tuple[int, int], my_direction: Facing
     ) -> characters.Action:
         distances, queue = self.a_star_setup()
         for consumable in self.consumables:
-            for i in range(DIRECTIONS_NUM):
-                distances[(*consumable, i)] = 0
-                queue.put((consumable, i, 0))
+            distances[consumable] = 0
+            queue.put((consumable, 0))
         return self.path_finding(queue, distances, my_position, my_direction)
 
     def attack(
-            self,
-            my_position: tuple[int, int],  # noqa
-            my_direction: Facing,  # noqa
+        self, my_position: tuple[int, int], my_direction: Facing
     ) -> characters.Action:
-        return characters.Action.ATTACK
+        my_weapon_hits = weapons_names_dict[self.weapon].cut_positions(self.terrain, my_position, my_direction)
+        if any(i in my_weapon_hits for i in self.positions_to_characters.keys()):
+            return characters.Action.ATTACK
+        attacking_positions = []
+        for character_position, attack_position in product(self.positions_to_characters.keys(), my_weapon_hits):
+            goal_position = (character_position[0] - attack_position[0] + my_position[0],
+                             character_position[1] - attack_position[1] + my_position[1])
+            attacking_positions.append(goal_position)  # The position I need to be at in order to attack opponent
+
+        distances, queue = self.a_star_setup()
+        for coord in attacking_positions:
+            distances[coord] = 0
+            queue.put((coord, 0))
+        return self.path_finding(queue, distances, my_position, my_direction)
+
+    def reconnaissance(
+        self,
+        my_position: tuple[int, int],  # noqa
+        my_direction: Facing,  # noqa
+    ) -> characters.Action:
+        return characters.Action.TURN_LEFT
 
     def run(self, my_position: tuple[int, int], my_direction: Facing):
         truncated_map = self.map[MAP_PADDING:-MAP_PADDING, MAP_PADDING:-MAP_PADDING]
         distances, queue = self.a_star_setup()
         hits_map = self.opponents_hit_dict()
         for position in chain(
-                self.positions_to_characters, hits_map.keys(), self.effects
+            self.positions_to_characters, hits_map.keys(), self.effects
         ):
             is_in = (
-                    0 < position[0] < truncated_map.shape[0]
-                    and 0 < position[1] < truncated_map.shape[1]
+                0 < position[0] < truncated_map.shape[0]
+                and 0 < position[1] < truncated_map.shape[1]
             )
             if is_in:
-                for i in range(DIRECTIONS_NUM):
-                    distances[(*position, i)] = 0
-                    queue.put((position, i, 0))
+                distances[position] = 0
+                queue.put((position, 0))
 
+        distances[self.menhir] = 20_000
+        queue.put((self.menhir, 20_000))
         while not queue.empty():
-            tile, direction, distance = queue.get()
-            dir_vector = indices_to_directions[direction].value
-            for dir_change, add_distance in zip((1, 3, 2), (1, 1, 2)):
-                if (
-                        distances[(*tile, (direction + dir_change) % DIRECTIONS_NUM)]
-                        > distance + add_distance
-                ):
-                    distances[(*tile, (direction + dir_change) % DIRECTIONS_NUM)] = (
-                            distance + add_distance
-                    )
-                    queue.put(
-                        (
-                            tile,
-                            (direction + dir_change) % DIRECTIONS_NUM,
-                            distance + add_distance,
-                        )
-                    )
-
-            next_tile = tile[0] + dir_vector[0], tile[1] + dir_vector[1]
-            is_in = (
+            tile, distance = queue.get()
+            for dir_vector in ((0, 1), (1, 0), (0, -1), (-1, 0)):
+                next_tile = tile[0] + dir_vector[0], tile[1] + dir_vector[1]
+                is_in = (
                     0 < next_tile[0] < truncated_map.shape[0]
                     and 0 < next_tile[1] < truncated_map.shape[1]
-            )
-
-            if (
+                )
+                if (
                     is_in
                     and not self.mist[next_tile]
                     and truncated_map[next_tile]
-                    and distances[(*next_tile, direction)] > distance + 1
-            ):
-                distances[(*next_tile, direction)] = distance + 1
-                queue.put((next_tile, direction, distance + 1))
-        position_idx = (
-                               distances[my_position].argmin()
-                               - directions_to_indices[my_direction]
-                               + DIRECTIONS_NUM
-                       ) % DIRECTIONS_NUM
-        dir_vector = my_direction.value
-        tile_in_front = my_position[0] + dir_vector[0], my_position[1] + dir_vector[1]
-        is_in = (
-                0 < tile_in_front[0] < truncated_map.shape[0]
-                and 0 < tile_in_front[1] < truncated_map.shape[1]
-        )
+                    and distances[next_tile] > distance + 1
+                ):
+                    distances[next_tile] = distance + 1
+                    queue.put((next_tile, distance + 1))
+        next_action_id = np.nan_to_num(
+            np.array(
+                [
+                    distances[i, j]
+                    if 0 < i < truncated_map.shape[0] and 0 < j < truncated_map.shape[1]
+                    else 0
+                    for i, j in neighbourhood_4(my_position)
+                ]
+            ),
+            posinf=0,
+        ).argmax()
+
         if (
-                position_idx == 0
-                and distances[(*tile_in_front, 0)] < float("inf")
-                and is_in
+            distances[my_position]
+            > distances[neighbourhood_4(my_position)[next_action_id]]
         ):
-            return characters.Action.STEP_FORWARD
-        elif position_idx == 2 or position_idx == 3:
             return characters.Action.TURN_RIGHT
-        return characters.Action.TURN_LEFT
+        else:
+            direction_diff = next_action_id - directions_to_indices[my_direction]
+            match (direction_diff + DIRECTIONS_NUM) % DIRECTIONS_NUM:
+                case 0:
+                    return characters.Action.STEP_FORWARD
+                case 1:
+                    return characters.Action.STEP_LEFT
+                case 2:
+                    return characters.Action.STEP_BACKWARD
+                case 3:
+                    return characters.Action.STEP_RIGHT
 
     def opponents_hit_dict(self):
         opponents_hits = [
@@ -381,161 +417,126 @@ class KirbyLearningController(controller.Controller):
         return opponents_hits_dict
 
     def path_finding(
-            self,
-            queue: Queue,
-            distances: np.ndarray,
-            my_position: tuple[int, int],
-            my_direction: Facing,
-            additional_impassable=None
+        self,
+        queue: Queue,
+        distances: np.ndarray,
+        my_position: tuple[int, int],
+        my_direction: Facing,
+        additional_impassable=None,
     ):
         truncated_map = self.map[MAP_PADDING:-MAP_PADDING, MAP_PADDING:-MAP_PADDING]
         hits_map = self.opponents_hit_dict()
         while not queue.empty():
-            tile, direction, distance = queue.get()
-            dir_vector = indices_to_directions[direction].value
-            for dir_change, add_distance in zip((1, 3, 2), (1, 1, 2)):
-                if (
-                        distances[(*tile, (direction + dir_change) % DIRECTIONS_NUM)]
-                        > distance + add_distance
-                ):
-                    distances[(*tile, (direction + dir_change) % DIRECTIONS_NUM)] = (
-                            distance + add_distance
-                    )
-                    queue.put(
-                        (
-                            tile,
-                            (direction + dir_change) % DIRECTIONS_NUM,
-                            distance + add_distance,
-                        )
-                    )
-
-            next_tile = tile[0] + dir_vector[0], tile[1] + dir_vector[1]
-
-            next_tile_effect = 1000 if next_tile in self.effects else 1
-            next_tile_effect += hits_map[next_tile] * 100
-
-            is_in = (
+            tile, distance = queue.get()
+            for dir_vector in ((0, 1), (1, 0), (0, -1), (-1, 0)):
+                next_tile = tile[0] + dir_vector[0], tile[1] + dir_vector[1]
+                is_in = (
                     0 < next_tile[0] < truncated_map.shape[0]
                     and 0 < next_tile[1] < truncated_map.shape[1]
-            )
-            if (
+                )
+                next_tile_effect = 1000 if next_tile in self.effects else 1
+                next_tile_effect += hits_map[next_tile] * 100
+                if (
                     is_in
                     and not self.mist[next_tile]
                     and truncated_map[next_tile]
                     and next_tile not in self.positions_to_characters
-                    and distances[(*next_tile, direction)] > distance + next_tile_effect
-                    and (additional_impassable is None or next_tile not in additional_impassable)
-            ):
-                distances[(*next_tile, direction)] = distance + next_tile_effect
-                queue.put((next_tile, direction, distance + 1))
-        position_idx = (
-                               distances[my_position].argmin()
-                               - directions_to_indices[my_direction]
-                               + DIRECTIONS_NUM
-                       ) % DIRECTIONS_NUM
-        if distances[(*my_position, directions_to_indices[my_direction])] in [
-            float("inf"),
-            0,
-        ]:
+                    and distances[next_tile] > distance + next_tile_effect
+                    and (
+                        additional_impassable is None
+                        or next_tile not in additional_impassable
+                    )
+                ):
+                    distances[next_tile] = distance + next_tile_effect
+                    queue.put((next_tile, distance + next_tile_effect))
+        next_action_id = np.array(
+            [
+                distances[i, j]
+                if 0 < i < truncated_map.shape[0] and 0 < j < truncated_map.shape[1]
+                else float("inf")
+                for i, j in neighbourhood_4(my_position)
+            ]
+        ).argmin()
+        if distances[my_position] == 0:
             return characters.Action.TURN_LEFT
-        if position_idx == 2:
-            return characters.Action.STEP_FORWARD
-        elif position_idx == 0 or position_idx == 3:
-            return characters.Action.TURN_LEFT
-        return characters.Action.TURN_RIGHT
+        else:
+            direction_diff = next_action_id - directions_to_indices[my_direction]
+            match (direction_diff + DIRECTIONS_NUM) % DIRECTIONS_NUM:
+                case 0:
+                    return characters.Action.STEP_FORWARD
+                case 1:
+                    return characters.Action.STEP_LEFT
+                case 2:
+                    return characters.Action.STEP_BACKWARD
+                case 3:
+                    return characters.Action.STEP_RIGHT
 
-    def get_transparent(
-            self, my_position: tuple[int, int], my_direction: Facing
+    def get_neighbourhood_from(
+        self, my_position: tuple[int, int], my_direction: Facing, my_map: torch.Tensor
     ) -> torch.Tensor:
-        neighbourhood = self.transparent[
-                        my_position[0]: my_position[0] + 2 * MAP_PADDING + 1,
-                        my_position[1]: my_position[1] + 2 * MAP_PADDING + 1,
-                        ]
+        neighbourhood = my_map[
+            my_position[0]: my_position[0] + 2 * MAP_PADDING + 1,
+            my_position[1]: my_position[1] + 2 * MAP_PADDING + 1,
+        ]
 
         neighbourhood = directions_to_rotations[my_direction](neighbourhood)
-
-        coords_list = [
-            (3, 3),
-            (2, 3),
-            (1, 3),
-            (0, 3),
-            (3, 4),
-            (3, 5),
-            (2, 4),
-            (3, 2),
-            (3, 1),
-            (2, 2),
-            (4, 3),
-        ]
-        neighbourhood = torch.tensor([neighbourhood[coords] for coords in coords_list])
-        return neighbourhood
+        coords_list = [(i + 2, j + 2) for i, j in neighbourhood_coords_list]
+        return torch.tensor([neighbourhood[coords] for coords in coords_list])
 
     def get_neighbourhood(
-            self, my_position: tuple[int, int], my_direction: Facing
+        self, my_position: tuple[int, int], my_direction: Facing
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        ###3###
-        ###2###
-        ##313##
-        #32023#
-        ###3###
-        #######
-        #######
-
+        ##2##
+        #212#
+        21012
+        #212#
+        ##2##
         Używam takiego sąsiedztwa
         """
         neighbourhood = self.map[
-                        my_position[0]: my_position[0] + 7, my_position[1]: my_position[1] + 7
-                        ]
+            my_position[0]: my_position[0] + 2 * MAP_PADDING + 1,
+            my_position[1]: my_position[1] + 2 * MAP_PADDING + 1,
+        ]
 
         neighbourhood = directions_to_rotations[my_direction](neighbourhood)
-        f = neighbourhood[2, 3]
-        ff = f and neighbourhood[1, 3]
-        fff = ff and neighbourhood[0, 3]
-        r = neighbourhood[3, 4]
-        rr = r and neighbourhood[3, 5]
-        rf = neighbourhood[2, 4] and (f or r)
-        l = neighbourhood[3, 2]
-        ll = l and neighbourhood[3, 1]
-        lf = neighbourhood[2, 2] and (f or l)
-        b = neighbourhood[4, 3]
-        neighbourhood = torch.tensor([f, ff, fff, l, ll, lf, r, rr, rf, b])
-        return neighbourhood, f
+        f1 = neighbourhood[1, 2]
+        f2 = f1 and neighbourhood[0, 2]
+        r1 = neighbourhood[2, 3]
+        r2 = r1 and neighbourhood[2, 4]
+        rf = neighbourhood[1, 3] and (f1 or r1)
+        l1 = neighbourhood[2, 1]
+        l2 = l1 and neighbourhood[2, 0]
+        lf = neighbourhood[1, 1] and (f1 or l1)
+        b1 = neighbourhood[3, 2]
+        b2 = neighbourhood[4, 2] and b1
+        lb = neighbourhood[3, 1] and (b1 or l1)
+        rb = neighbourhood[3, 3] and (b1 or r1)
+        neighbourhood = torch.tensor([f1, f2, l1, l2, lf, r1, r2, rf, b1, b2, lb, rb])
+        return neighbourhood, f1
 
     def opponents_hits_vector(
-            self, opponents_hits: list[tuple[tuple[int, int], int]]
+        self, opponents_hits: list[tuple[tuple[int, int], int]]
     ) -> list[int]:
-        neighbourhood_hits = [
-            (-3, 0),
-            (-2, 0),
-            (-1, 0),
-            (-1, -1),
-            (-1, 1),
-            (0, -2),
-            (0, -1),
-            (0, 0),
-            (0, 1),
-            (0, 2),
-            (1, 0),
-        ]
         hit_effects = defaultdict(lambda: 0)
         for tile in opponents_hits:
             relative_coord = tile[0]
-            if relative_coord in neighbourhood_hits:
+            if relative_coord in neighbourhood_coords_list:
                 hit_effects[relative_coord] += tile[1]
 
-        return [hit_effects[i] for i in neighbourhood_hits]
+        return [hit_effects[i] for i in neighbourhood_coords_list]
 
     def analyse_knoledge(self, knowledge: characters.ChampionKnowledge):
+
         relative_coords = lambda x: dir_to_coords_change[my_direction](
             x[0] - knowledge.position.x, knowledge.position.y - x[1]
         )
         scaled_coords = lambda x: (
-            x[0] / self.map.shape[0] - 2 * MAP_PADDING,
-            x[1] / self.map.shape[1] - 2 * MAP_PADDING,
+            x[0] / (self.map.shape[0] - 2 * MAP_PADDING),
+            x[1] / (self.map.shape[1] - 2 * MAP_PADDING),
         )
-        distance_x_y = lambda x: abs(x[0]) + abs(x[1])
-
+        if self.time == 0:
+            self.characters_no = knowledge.no_of_champions_alive
         my_position = knowledge.position
         my_tile: TileDescription = knowledge.visible_tiles[knowledge.position]
         my_effects = 1 if my_tile.effects else 0
@@ -586,7 +587,7 @@ class KirbyLearningController(controller.Controller):
 
         characters_seen = []
         for i, (character_name, coords) in enumerate(
-                self.characters_to_positions.items()
+            self.characters_to_positions.items()
         ):
             character = self.characters[character_name]
             direction = directions_values_relative[(character.facing, my_direction)]
@@ -599,14 +600,14 @@ class KirbyLearningController(controller.Controller):
             )
         characters_seen.sort(key=lambda x: distance_x_y(x[-3:]))
         attack_effects = (
-                sum(
-                    [
-                        my_weapon_power
-                        for i in self.positions_to_characters.keys()
-                        if relative_coords(i) in my_weapon_hits
-                    ]
-                )
-                / 8
+            sum(
+                [
+                    my_weapon_power
+                    for i in self.positions_to_characters.keys()
+                    if relative_coords(i) in my_weapon_hits
+                ]
+            )
+            / 8
         )
         opponents_hits: list[tuple[tuple[int, int], int]] = [
             (relative_coords(i), weapon_power(character.weapon))
@@ -633,11 +634,15 @@ class KirbyLearningController(controller.Controller):
             my_position, my_direction
         )
 
-        transparent = self.get_transparent(my_position, my_direction)
+        transparent = self.get_neighbourhood_from(
+            my_position, my_direction, self.transparent
+        )
+        #prev_actions = [[int(i) for i in f'{i:03b}'] for i in self.prev_actions[-5:]]
+        seen = self.get_neighbourhood_from(my_position, my_direction, self.seen)
         menhir_coords = scaled_coords(relative_coords(self.menhir))
         meta = torch.tensor(
             [
-                knowledge.no_of_champions_alive,
+                knowledge.no_of_champions_alive / self.characters_no,
                 *menhir_coords,
                 self.exploration_status(),
                 self.time / 1000,
@@ -655,10 +660,12 @@ class KirbyLearningController(controller.Controller):
                 closest_loot,  # 20
                 closest_effects,  # 20
                 characters_vector,  # 15
-                neighbourhood,  # 10
-                transparent,  # 11
+                neighbourhood,  # 12
+                transparent,  # 12
                 meta,  # 9
-                hits_vector,  # 11
+                hits_vector,  # 13
+                seen,  # 12
+                # prev_actions,  # 15
             ]
         )
         return result_vector.reshape(1, -1).type(torch.float32), attack_effects
@@ -678,7 +685,7 @@ class KirbyLearningController(controller.Controller):
         self.losses.append(critic_loss.item())
         tau = 0.1
         for target_param, param in zip(
-                self.model_B.parameters(), self.model_A.parameters()
+            self.model_B.parameters(), self.model_A.parameters()
         ):
             target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
 
@@ -693,9 +700,10 @@ class KirbyLearningController(controller.Controller):
             self.attack,
             self.bigger_weapons,
             self.get_consumables,
+            self.reconnaissance,
         ]
-        new_map, attack_effects = self.analyse_knoledge(knowledge)
 
+        new_map, attack_effects = self.analyse_knoledge(knowledge)
         my_tile = knowledge.visible_tiles[knowledge.position]
         my_health = my_tile.character.health
 
@@ -710,13 +718,18 @@ class KirbyLearningController(controller.Controller):
             )  # przewidujemy teraźniejszość na podstawie przeszłości
             prev_policy_log = torch.log(policy_a[0, self.prev_actions[-1]])
 
-            reward = DISCOUNT_FACTOR * expected_value_b[
-                0, 0].detach() + 0.5 + min(8, my_health) / 20 + self.exploration_status() / 10 + self.prev_attack_effects
+            reward = (
+                DISCOUNT_FACTOR * expected_value_b[0, 0].detach()
+                + min(8, my_health) / 20
+                + self.exploration_status() / 10
+                + self.prev_attack_effects
+                - knowledge.no_of_champions_alive / self.characters_no / 10
+            )
             self.learn(reward, expected_value_a, prev_policy_log)
 
         epsilon_greedy_probs = (
-                np.ones((POLICIES_NUM,)) / POLICIES_NUM * EPSILON
-                + (1 - EPSILON) * policy_b.cpu().detach().numpy()[0]
+            np.ones((POLICIES_NUM,)) / POLICIES_NUM * EPSILON
+            + (1 - EPSILON) * policy_b.cpu().detach().numpy()[0]
         )
         epsilon_greedy_probs /= epsilon_greedy_probs.sum()
         choice_idx = np.random.choice(
@@ -735,19 +748,25 @@ class KirbyLearningController(controller.Controller):
     def praise(self, score: int) -> None:
         self.scores.append(score)
         self.times.append(self.time)
-        if score < BOTS_NO:
+        if score < self.characters_no:
             policy_a, expected_value_a = self.model_A(self.prev_map.to(device))
             prev_policy_log = torch.log(policy_a[0, self.prev_actions[-1]])
-            self.learn(self.exploration_status() / 10 + self.prev_attack_effects, expected_value_a, prev_policy_log)
+            self.learn(
+                min(8, 0) / 20
+                + self.exploration_status() / 10
+                + self.prev_attack_effects,
+                expected_value_a,
+                prev_policy_log,
+            )
 
     def log_progress(self, game_no):
-        rewards = [i - 3 for i in self.scores]
+        rewards = [i / BOTS_NO for i in self.scores]
         last_50_cumsum = [
-            sum(rewards[i - 50: i + 1]) / min(i + 1, 50)
+            sum(rewards[max(0, i - 50): i + 1]) / min(i + 1, 50)
             for i in range(20, len(rewards))
         ]
         last_50_times = [
-            sum(self.times[i - 50: i + 1]) / min(i + 1, 50)
+            sum(self.times[max(0, i - 50): i + 1]) / min(i + 1, 50)
             for i in range(20, len(self.times))
         ]
         fig, ax = plt.subplots(2, 2, figsize=(10, 6))
@@ -766,7 +785,7 @@ class KirbyLearningController(controller.Controller):
             last_50_times,
             color="green",
         )
-        for i, color in enumerate(("red", "green", "blue", "pink", "cyan", "purple")):
+        for i, color in enumerate(("red", "green", "blue", "pink", "cyan", "purple", "yellow")):
             upper = [episode[i] for episode in self.actions_count]
             lower = (
                 [episode[i - 1] for episode in self.actions_count]
@@ -800,8 +819,8 @@ class KirbyLearningController(controller.Controller):
 
         arena = Arena.load(arena_description.name)
         self.terrain = arena.terrain
-        K = 50
-        if game_no % K == 0 and game_no:
+        checkpoint1_freq = 50
+        if game_no % checkpoint1_freq == 0 and game_no:
             self.log_progress(game_no)
 
             checkpoint = {
@@ -810,18 +829,17 @@ class KirbyLearningController(controller.Controller):
             }
             torch.save(checkpoint, os.path.join("weights", f"weights{game_no}.pth"))
 
-        K1 = 10
-        if game_no % K1 == 0 and game_no:
-
+        """checkpoint2_freq = 10
+        if game_no % checkpoint2_freq == 0 and game_no:
             checkpoint = {
                 "model": self.model_A.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
             }
-            torch.save(checkpoint, "learned_weights.pth")
+            torch.save(checkpoint, "learned_weights.pth")"""
 
         self.map = torch.zeros(arena.size)
         self.transparent = torch.zeros(arena.size)
-        self.seen = torch.zeros(arena.size)
+
         self.time = 0
 
         self.consumables = set()
@@ -855,6 +873,7 @@ class KirbyLearningController(controller.Controller):
                 constant_values=(0, 0),
             )
         )
+        self.seen = torch.zeros_like(self.map)
         self.random_menhir()
         self.prev_map = None
         self.found_menhir = False
