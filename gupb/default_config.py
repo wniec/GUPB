@@ -1,6 +1,5 @@
 from gupb.controller import keyboard
 from gupb.controller import random
-from gupb.controller import kirby_learning
 from gupb.controller.camperbot import camperbot
 from gupb.controller.neat import kim_dzong_neat_jr
 from gupb.controller import kirby_learning
@@ -12,12 +11,10 @@ from gupb.controller.bupg import bupg
 from gupb.controller.pirat import pirat
 from gupb.controller import roomba
 from gupb.controller import Keramzytowy_mocarz
-
+from gupb.scripts import arena_generator
 
 keyboard_controller = keyboard.KeyboardController()
-
-CONFIGURATION = {
-    "arenas": [
+'''{"arenas": [
         "archipelago",
         "dungeon",
         "fisher_island",
@@ -27,15 +24,19 @@ CONFIGURATION = {
         "ordinary_chaos",
         "wasteland",
         # "mini"
-    ],
+    ],}'''
+CONFIGURATION = {
+    'arenas': arena_generator.generate_arenas(30, arena_generator.random_size_generator()),
+
     'controllers': [
         random.RandomController("Alice"),
-        camperbot.CamperBotController("Camper"),
+        # camperbot.CamperBotController("Camper"),
         # kim_dzong_neat_jr.KimDzongNeatJuniorController(),
         kirby_learning.KirbyLearningController("KirbyLearning"),
-        # norgul.NorgulController("Norgul"),
+        # kirby ...
+        norgul.NorgulController("Norgul"),
         reinforced_rogue.ReinforcedRogueController("ReinforcedRogue"),
-        # garek.GarekController("Garek"),
+        garek.GarekController("Garek"),
         rustler.Rustler("Rustler"),
         # bupg.BUPGController("BUPG"),
         # roomba.RoombaController("Roomba"),

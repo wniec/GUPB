@@ -13,14 +13,17 @@ class WeaponDecider:
         self.actualize_weapons(arena)
         self.max_tiles_for_weapon = max_tiles_for_weapon
         if max_tiles_for_weapon is None:
-            self.max_tiles_for_weapon = {"sword": 4, "axe": 6, "amulet": 6, "bow_unloaded": 0 , "scroll": 6}
+            self.max_tiles_for_weapon = {"sword": 4, "axe": 6, "amulet": 6, "bow_unloaded": 0, "scroll": 6}
 
     def actualize_weapons(self, arena: Arena):
         for coord in arena.terrain:
             tile = arena.terrain[coord]
             loot = tile.loot
             if loot is not None:
-                self.weapons[loot.description().name] += [coord]
+                try:
+                    self.weapons[loot.description().name] += [coord]
+                except Exception as e:
+                    pass
 
     def check_if_need_to_go(self, start, path_finder: PathFinder) -> [coordinates]: 
         best_route = []

@@ -71,7 +71,7 @@ class KirbyController(KirbyLearningController):
         pass
 
     def reset(self, game_no: int, arena_description: arenas.ArenaDescription) -> None:
-        if os.path.exists("learned_weights.pth"):
+        if os.path.exists("learned_weights.pth") and game_no%10==0:
             checkpoint = torch.load("learned_weights.pth", weights_only=False)
             self.model_A.load_state_dict(checkpoint["model"])
             self.model_B.load_state_dict(self.model_A.state_dict())
@@ -116,6 +116,7 @@ class KirbyController(KirbyLearningController):
                 constant_values=(0, 0),
             )
         )
+        self.seen = torch.zeros_like(self.map)
         self.random_menhir()
         self.prev_map = None
         self.found_menhir = False
