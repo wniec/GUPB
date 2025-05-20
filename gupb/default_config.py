@@ -14,23 +14,23 @@ from gupb.controller import Keramzytowy_mocarz
 from gupb.scripts import arena_generator
 
 keyboard_controller = keyboard.KeyboardController()
-'''{"arenas": [
+arenas = [
         "archipelago",
         "dungeon",
         "fisher_island",
-        "island",
+        # "island",
         "isolated_shrine",
         "lone_sanctum",
         "ordinary_chaos",
         "wasteland",
         # "mini"
-    ],}'''
+    ]
 CONFIGURATION = {
-    'arenas': arena_generator.generate_arenas(30, arena_generator.random_size_generator()),
+    'arenas': arena_generator.generate_arenas(30, arena_generator.random_size_generator()) + arenas,
 
     'controllers': [
         random.RandomController("Alice"),
-        # camperbot.CamperBotController("Camper"),
+        camperbot.CamperBotController("Camper"),
         # kim_dzong_neat_jr.KimDzongNeatJuniorController(),
         kirby_learning.KirbyLearningController("KirbyLearning"),
         # kirby ...
@@ -39,7 +39,7 @@ CONFIGURATION = {
         garek.GarekController("Garek"),
         rustler.Rustler("Rustler"),
         # bupg.BUPGController("BUPG"),
-        # roomba.RoombaController("Roomba"),
+        roomba.RoombaController("Roomba"),
         # pirat.PiratController("Pirat"),
         # Keramzytowy_mocarz.Keramzytowy_mocarz("KERAMZYTOWY_MOCARZ"),
     ],

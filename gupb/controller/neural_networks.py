@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils import spectral_norm
 
+DROPOUT_RATE = 0.5
 class ActorCriticNet(nn.Module):
     def __init__(self, action_size, input_size=24, hidden1=1024, hidden2=512, hidden3=128):
         super().__init__()
@@ -57,12 +58,15 @@ class ActorNet(nn.Module):
         self.shared = nn.Sequential(
             nn.Linear(input_size, hidden1),
             nn.ReLU(),
+            nn.Dropout(p=DROPOUT_RATE),
             nn.LayerNorm(hidden1),
             nn.Linear(hidden1, hidden2),
             nn.ReLU(),
+            nn.Dropout(p=DROPOUT_RATE),
             nn.LayerNorm(hidden2),
             nn.Linear(hidden2, hidden3),
             nn.ReLU(),
+            nn.Dropout(p=DROPOUT_RATE),
             nn.LayerNorm(hidden3),
         )
         self.actor_head = nn.Sequential(

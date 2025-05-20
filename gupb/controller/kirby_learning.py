@@ -1,4 +1,3 @@
-# import json
 import os.path
 import traceback
 from collections import defaultdict
@@ -52,22 +51,28 @@ def _fibonacci() -> Iterator[int]:
 
 ROUNDS_NO = 3001
 BETA = 0.01
-EPSILON = 0.1
-LAMBDA = 0.1
+EPSILON = 0.00
+LAMBDA = 0.2
 ACTOR_LR_ARRAY: np.ndarray[float] = 1e-6 * (
     np.cumprod(np.full(shape=(ROUNDS_NO,), fill_value=1.0))
 )
 CRITIC_LR_ARRAY: np.ndarray[float] = 1e-5 * (
     np.cumprod(np.full(shape=(ROUNDS_NO,), fill_value=0.99)) + 1e-1
 )
-BOTS_NO = 6  # 12
+BOTS_NO = 8  # 12
 MAP_PADDING = 2
 POLICIES_NUM = 7
 STATE_SIZE = 24
 DIRECTIONS_NUM = 4
+STEP_SIZE = 200
+TD_STEPS = 5
 
 DISCOUNT_FACTOR_ARRAY = np.linspace(0.99, 0.99, ROUNDS_NO)
-EPSILON_ARRAY = np.linspace(EPSILON, 0.00, ROUNDS_NO) #TODO schodkowa zmiana / (wykładniczy)?
+
+steps = ROUNDS_NO // STEP_SIZE + 1
+
+EPSILON_ARRAY = np.linspace(EPSILON, 0.00, ROUNDS_NO)  # TODO schodkowa zmiana / (wykładniczy)?
+EPSILON_ARRAY = np.array([EPSILON_ARRAY[(min(ROUNDS_NO, i + 200) // STEP_SIZE) * STEP_SIZE] for i, _ in enumerate(EPSILON_ARRAY)])
 DISCOUNT_FACTOR = DISCOUNT_FACTOR_ARRAY[0]
 MAX_SCORE = [i for i, _ in zip(_fibonacci(), range(BOTS_NO))][-1]
 
@@ -161,7 +166,7 @@ def distance_x_y(x: tuple[float, float]):
 class KirbyLearningController(controller.Controller):
     def __init__(self, first_name: str = "Kirby"):
         self.characters_no = None
-        self.prev_attack_effects = None
+        self.prev_attack_effects = []
         self.first_name: str = first_name
         self.map: torch.Tensor = torch.zeros((0,))
         self.transparent: torch.Tensor = torch.zeros((0,))
@@ -213,6 +218,7 @@ class KirbyLearningController(controller.Controller):
         self.actions = np.zeros((POLICIES_NUM,))
 
         self.states = []
+        self.rewards = []
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, KirbyLearningController):
@@ -807,7 +813,7 @@ class KirbyLearningController(controller.Controller):
         self.critic_optimizer.step()
         self.critic_losses.append(critic_loss.item())
 
-        noise_inputs = torch.normal(0.0, std=0.1, size=(STATE_SIZE,)).to(device)
+        """noise_inputs = torch.rand(size=(STATE_SIZE,)).to(device) * 0.4 - 0.2
         policy_on_noise = self.actor_A(noise_inputs)
         flat_target = torch.full_like(policy_on_noise, 1.0 / policy_on_noise.shape[-1])
         flatness_loss = torch.nn.functional.kl_div(
@@ -818,7 +824,7 @@ class KirbyLearningController(controller.Controller):
         self.actor_optimizer.zero_grad()
         (flatness_loss * LAMBDA).backward()
         torch.nn.utils.clip_grad_norm_(self.actor_A.parameters(), max_norm=0.5)
-        self.actor_optimizer.step()
+        self.actor_optimizer.step()"""
 
         tau = 0.1
         for target_param, param in zip(
@@ -826,7 +832,7 @@ class KirbyLearningController(controller.Controller):
         ):
             target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
         for target_param, param in zip(
-            self.actor_B.parameters(), self.actor_A.parameters()
+            self.critic_B.parameters(), self.critic_A.parameters()
         ):
             target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
 
@@ -847,8 +853,7 @@ class KirbyLearningController(controller.Controller):
 
             new_map, attack_effects = self.analyse_knoledge(knowledge)
             new_map = self.normalize_state(new_map)
-            # self.states.append(new_map.detach().cpu().numpy().tolist())
-            # print(new_map)
+
             my_tile = knowledge.visible_tiles[knowledge.position]
             my_health = my_tile.character.health
 
@@ -872,7 +877,7 @@ class KirbyLearningController(controller.Controller):
                     + min(10, my_health) / 20
                     + 0.5
                     + self.exploration_status() / 5
-                    + self.prev_attack_effects
+                    + self.prev_attack_effects[-1]
                 )
                 self.learn(reward, expected_value_a, prev_policy_log, entropy_bonus)
 
@@ -888,7 +893,7 @@ class KirbyLearningController(controller.Controller):
 
             self.time += 1
             self.prev_map = new_map.clone()
-            self.prev_attack_effects = 0 if choice_idx != 3 else attack_effects / 16
+            self.prev_attack_effects.append(0 if choice_idx != 3 else attack_effects / 16)
             self.actions[choice_idx] += 1
             self.prev_actions.append(choice_idx)
 
@@ -908,7 +913,7 @@ class KirbyLearningController(controller.Controller):
             entropy_bonus = BETA * entropy
             self.learn(
                 torch.tensor(
-                    0.0 + self.exploration_status() / 10 + self.prev_attack_effects
+                    0.0 + self.exploration_status() / 10 + self.prev_attack_effects[-1]
                 ).reshape((1, 1)),
                 expected_value_a,
                 prev_policy_log,
@@ -963,12 +968,13 @@ class KirbyLearningController(controller.Controller):
             color="red",
         )
         plt.show()
-        plt.savefig(os.path.join("plots4", f"all_rounds_{game_no}.png"))
+        plt.savefig(os.path.join("plots1", f"all_rounds_{game_no}.png"))
 
     def reset(self, game_no: int, arena_description: arenas.ArenaDescription) -> None:
         global DISCOUNT_FACTOR, EPSILON
         DISCOUNT_FACTOR = DISCOUNT_FACTOR_ARRAY[game_no]
         EPSILON = EPSILON_ARRAY[game_no]
+        self.prev_attack_effects = []
         if game_no == 0:
             if os.path.exists("best_weights.pth"):
                 checkpoint = torch.load("best_weights.pth", weights_only=False)
@@ -1058,6 +1064,7 @@ class KirbyLearningController(controller.Controller):
         self.actions = np.zeros((POLICIES_NUM,))
         self.weapon = Knife().description()
         self.mist = set()
+        self.rewards = []
 
     @property
     def name(self) -> str:
