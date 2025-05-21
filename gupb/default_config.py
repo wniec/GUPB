@@ -3,6 +3,7 @@ from gupb.controller import random
 from gupb.controller.camperbot import camperbot
 from gupb.controller.neat import kim_dzong_neat_jr
 from gupb.controller import kirby_learning
+from gupb.controller import kirby
 from gupb.controller import norgul
 from gupb.controller import reinforced_rogue
 from gupb.controller import garek
@@ -26,22 +27,22 @@ arenas = [
         # "mini"
     ]
 CONFIGURATION = {
-    'arenas': arena_generator.generate_arenas(30, arena_generator.random_size_generator()) + arenas,
+    'arenas': arenas + arena_generator.generate_arenas(30, arena_generator.random_size_generator()),
 
     'controllers': [
         random.RandomController("Alice"),
         camperbot.CamperBotController("Camper"),
-        # kim_dzong_neat_jr.KimDzongNeatJuniorController(),
+        kim_dzong_neat_jr.KimDzongNeatJuniorController(),
         kirby_learning.KirbyLearningController("KirbyLearning"),
-        # kirby ...
+        # kirby.KirbyController("Kirby"),
         norgul.NorgulController("Norgul"),
         reinforced_rogue.ReinforcedRogueController("ReinforcedRogue"),
         garek.GarekController("Garek"),
         rustler.Rustler("Rustler"),
-        # bupg.BUPGController("BUPG"),
+        bupg.BUPGController("BUPG"),
         roomba.RoombaController("Roomba"),
-        # pirat.PiratController("Pirat"),
-        # Keramzytowy_mocarz.Keramzytowy_mocarz("KERAMZYTOWY_MOCARZ"),
+        pirat.PiratController("Pirat"),
+        Keramzytowy_mocarz.Keramzytowy_mocarz("KERAMZYTOWY_MOCARZ"),
     ],
     'start_balancing': False,
     'visualise': False,

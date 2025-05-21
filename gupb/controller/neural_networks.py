@@ -83,6 +83,5 @@ class ActorLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, reward, expected_reward, log_prob):
-        error = reward - expected_reward
-        return -error * log_prob
+    def forward(self, advantages, log_prob):
+        return (-advantages * log_prob).mean()

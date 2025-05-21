@@ -59,7 +59,7 @@ ACTOR_LR_ARRAY: np.ndarray[float] = 1e-6 * (
 CRITIC_LR_ARRAY: np.ndarray[float] = 1e-5 * (
     np.cumprod(np.full(shape=(ROUNDS_NO,), fill_value=0.99)) + 1e-1
 )
-BOTS_NO = 8  # 12
+BOTS_NO = 12  # 12
 MAP_PADDING = 2
 POLICIES_NUM = 7
 STATE_SIZE = 24
@@ -166,14 +166,12 @@ def distance_x_y(x: tuple[float, float]):
 class KirbyLearningController(controller.Controller):
     def __init__(self, first_name: str = "Kirby"):
         self.characters_no = None
-        self.prev_attack_effects = []
         self.first_name: str = first_name
         self.map: torch.Tensor = torch.zeros((0,))
         self.transparent: torch.Tensor = torch.zeros((0,))
         self.terrain: dict = {}
         self.seen: torch.Tensor = torch.zeros((0,))
         self.menhir: tuple = (0, 0)
-        self.prev_map = None
         self.prev_actions: list[int] = [7 for _ in range(5)]
         self.mist: set[tuple[int, int]] = set()
         self.found_menhir: bool = False
@@ -789,14 +787,9 @@ class KirbyLearningController(controller.Controller):
         )
         return (state - avgs) / stds
 
-    def learn(self, current_reward, expected_reward, policy_log):
-        actor_loss = self.actor_loss_fn(
-            torch.tensor(current_reward).reshape(1, 1).to(device), expected_reward.detach(), policy_log
-        )
-        critic_loss = self.critic_loss_fn(
-            torch.tensor(current_reward).reshape(1, 1).to(device), expected_reward
-        )
-
+    def learn(self, advantages, policy_log):
+        actor_loss = self.actor_loss_fn(advantages.detach(), policy_log)
+        critic_loss = self.critic_loss_fn(advantages, torch.zeros_like(advantages))
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actor_A.parameters(), max_norm=0.5)
@@ -856,30 +849,37 @@ class KirbyLearningController(controller.Controller):
             with torch.no_grad():
                 policy_b = self.actor_B(new_map.reshape((1, -1)).to(device))  # przewidujemy przyszłość
                 expected_value_b = self.critic_B(new_map.reshape((1, -1)).to(device))  # przewidujemy przyszłość
-            reward = (
-                    DISCOUNT_FACTOR * expected_value_b.detach()
-                    + min(10, my_health) / 20
-                    + 0.5
-                    + self.exploration_status() / 5
-                    + self.prev_attack_effects[-1]
-            )
-            self.rewards.append(reward)
+                reward = (
+                        DISCOUNT_FACTOR * expected_value_b.detach()
+                        + min(10, my_health) / 20
+                        + 0.5
+                        + self.exploration_status() / 5
+                        + attack_effects / 16 * policy_b.detach()[0, 3]
+                )
+                self.rewards.append(reward)
 
             if self.time > TD_STEPS:
+                values = self.rewards[-TD_STEPS:]
+                states = torch.vstack(self.states[-TD_STEPS:])
+                policy_a = self.actor_A(states.to(device))  # przewidujemy teraz na podstawie przeszłości
+                expected_value_a = self.critic_A(states.to(device))
 
-                if self.states:
-                    values = self.rewards[-TD_STEPS:]
-                    states = torch.hstack(self.states[-TD_STEPS:])
-                    policy_a = self.actor_A(states.to(device))  # przewidujemy teraz na podstawie przeszłości
-                    expected_value_a = self.critic_A(states.to(device))
+                actions = torch.tensor(self.prev_actions[-TD_STEPS:], device=policy_a.device)  # shape: [TD_STEPS]
+                log_probs = torch.log(policy_a)
+                selected_log_probs = log_probs.gather(1, actions.unsqueeze(1))  # shape: [TD_STEPS]
 
-                    actions = torch.tensor(self.prev_actions[-TD_STEPS:], device=policy_a.device)  # shape: [TD_STEPS]
-                    log_probs = torch.log(policy_a)
-                    selected_log_probs = log_probs.gather(1, actions.unsqueeze(1)).squeeze(1)  # shape: [TD_STEPS]
+                deltas = torch.tensor(values).reshape(-1, 1).to(device) - expected_value_a
 
-                    # entropy = -torch.sum(policy_a * torch.log(policy_a + 1e-8))
-                    # entropy_bonus = BETA * entropy
-                    self.learn(torch.tensor(values), expected_value_a, selected_log_probs)
+                gae = 0
+                advantages = []
+                for delta in reversed(deltas):
+                    gae = delta + DISCOUNT_FACTOR * LAMBDA * gae
+                    advantages.append(gae)
+                advantages = torch.stack(advantages[::-1])
+
+                # entropy = -torch.sum(policy_a * torch.log(policy_a + 1e-8))
+                # entropy_bonus = BETA * entropy
+                self.learn(advantages, selected_log_probs)
 
             epsilon_greedy_probs = (
                     np.ones((POLICIES_NUM,)) / POLICIES_NUM * EPSILON
@@ -890,13 +890,11 @@ class KirbyLearningController(controller.Controller):
                 [i for i in range(POLICIES_NUM)],
                 p=epsilon_greedy_probs if self.states else None,
             )
-            self.prev_map = new_map.clone()
 
             self.time += 1
 
             self.actions[choice_idx] += 1
             self.prev_actions.append(choice_idx)
-            self.prev_attack_effects.append(0 if choice_idx != 3 else attack_effects / 16)
             self.states.append(new_map)
 
             return policies[choice_idx](my_position, my_direction)
@@ -907,23 +905,20 @@ class KirbyLearningController(controller.Controller):
     def praise(self, score: int) -> None:
         self.scores.append(score)
         self.times.append(self.time)
-        reward = (
-                0.0
-                + self.exploration_status() / 5
-                + self.prev_attack_effects[-1]
-        )
+        reward = 0.0 + self.exploration_status() / 5
         self.rewards.append(reward)
         if self.time > TD_STEPS and score < MAX_SCORE:
-            if self.states:
-                values = self.rewards[-TD_STEPS:]
-                states = torch.hstack(self.states[-TD_STEPS:])
-                policy_a = self.actor_A(states.to(device))  # przewidujemy teraz na podstawie przeszłości
-                expected_value_a = self.critic_A(states.to(device))
+            values = self.rewards[-TD_STEPS:]
+            states = torch.vstack(self.states[-TD_STEPS:])
+            policy_a = self.actor_A(states.to(device))  # przewidujemy teraz na podstawie przeszłości
+            expected_value_a = self.critic_A(states.to(device))
 
-                actions = torch.tensor(self.prev_actions[-TD_STEPS:], device=policy_a.device)  # shape: [TD_STEPS]
-                log_probs = torch.log(policy_a)
-                selected_log_probs = log_probs.gather(1, actions.unsqueeze(1)).squeeze(1)  # shape: [TD_STEPS]
-                self.learn(torch.tensor(values), expected_value_a, selected_log_probs)
+            actions = torch.tensor(self.prev_actions[-TD_STEPS:], device=policy_a.device)  # shape: [TD_STEPS]
+            log_probs = torch.log(policy_a)
+            selected_log_probs = log_probs.gather(1, actions.unsqueeze(1))  # shape: [TD_STEPS]
+
+            advantages = torch.tensor(values).reshape(-1, 1).to(device) - expected_value_a
+            advantages *= torch.cumprod(torch.full(size=advantages.shape, fill_value=LAMBDA), dim=0).to(device)
 
     def log_progress(self, game_no):
         # TODO plot actor loss ? + avg reward
@@ -973,13 +968,12 @@ class KirbyLearningController(controller.Controller):
             color="red",
         )
         plt.show()
-        plt.savefig(os.path.join("plots1", f"all_rounds_{game_no}.png"))
+        plt.savefig(os.path.join("plots", f"all_rounds_{game_no}.png"))
 
     def reset(self, game_no: int, arena_description: arenas.ArenaDescription) -> None:
         global DISCOUNT_FACTOR, EPSILON
         DISCOUNT_FACTOR = DISCOUNT_FACTOR_ARRAY[game_no]
         EPSILON = EPSILON_ARRAY[game_no]
-        self.prev_attack_effects = []
         if game_no == 0:
             if os.path.exists("best_weights.pth"):
                 checkpoint = torch.load("best_weights.pth", weights_only=False)
@@ -1063,7 +1057,6 @@ class KirbyLearningController(controller.Controller):
         )
         self.seen = torch.zeros_like(self.map)
         self.random_menhir()
-        self.prev_map = None
         self.found_menhir = False
         self.prev_actions = [7 for _ in range(5)]
         self.actions = np.zeros((POLICIES_NUM,))
