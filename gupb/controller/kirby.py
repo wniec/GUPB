@@ -88,7 +88,6 @@ class KirbyController(KirbyLearningController):
     def reset(self, game_no: int, arena_description: arenas.ArenaDescription) -> None:
         arena = Arena.load(arena_description.name)
         self.terrain = arena.terrain
-
         """checkpoint2_freq = 10
         if game_no % checkpoint2_freq == 0 and game_no:
             checkpoint = {

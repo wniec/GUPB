@@ -1,3 +1,4 @@
+# import json
 import os.path
 import traceback
 from collections import defaultdict
@@ -54,10 +55,10 @@ BETA = 0.01
 EPSILON = 0.00
 LAMBDA = 0.5
 ACTOR_LR_ARRAY: np.ndarray[float] = 1e-6 * (
-    np.cumprod(np.full(shape=(ROUNDS_NO,), fill_value=1.0))
+    np.cumprod(np.full(shape=(ROUNDS_NO,), fill_value=0.993)) + 1e-2
 )
 CRITIC_LR_ARRAY: np.ndarray[float] = 1e-5 * (
-    np.cumprod(np.full(shape=(ROUNDS_NO,), fill_value=0.99)) + 1e-1
+    np.cumprod(np.full(shape=(ROUNDS_NO,), fill_value=0.993)) + 1e-2
 )
 BOTS_NO = 12  # 12
 MAP_PADDING = 2
@@ -216,6 +217,7 @@ class KirbyLearningController(controller.Controller):
         self.actions = np.zeros((POLICIES_NUM,))
 
         self.states: list[torch.Tensor] = []
+        self.all_states = []
         self.rewards = []
 
     def __eq__(self, other: object) -> bool:
@@ -730,60 +732,16 @@ class KirbyLearningController(controller.Controller):
 
     def normalize_state(self, state: torch.Tensor) -> torch.Tensor:
         avgs = torch.tensor(
-            [
-                    4.8950e-01,
-                    8.2424e-03,
-                    4.3344e-01,
-                    4.5927e-01,
-                    5.0545e-01,
-                    5.0431e-01,
-                    8.3103e-01,
-                    6.1210e-01,
-                    4.0678e-01,
-                    2.0503e02,
-                    6.3698e-03,
-                    3.9706e01,
-                    3.9706e01,
-                    3.4513e-02,
-                    1.2272e00,
-                    8.0143e-01,
-                    5.8840e00,
-                    2.2321e-03,
-                    5.4248e-03,
-                    1.2792e01,
-                    8.8991e00,
-                    1.3816e00,
-                    6.2458e-02,
-                    1.4943e-01,
-            ]
+            [5.4893e-01, 6.6367e-03, 4.0418e-01, 4.3768e-01, 4.8756e-01, 5.0462e-01,
+             6.5315e-01, 6.0325e-01, 4.4587e-01, 2.9541e+02, 1.1319e-02, 4.2241e+01,
+             4.2241e+01, 7.5589e-02, 1.1823e+00, 6.6535e-01, 4.9417e+00, 4.8999e-03,
+             1.6028e-02, 1.3070e+01, 9.0275e+00, 2.4509e+00, 5.3455e-02, 1.6339e-01]
         )
         stds = torch.tensor(
-            [
-                    1.2267e-01,
-                    9.0414e-02,
-                    2.2296e-01,
-                    2.1464e-01,
-                    4.9997e-01,
-                    4.9998e-01,
-                    1.8627e-01,
-                    4.8727e-01,
-                    1.4949e-01,
-                    1.2914e02,
-                    4.5605e-02,
-                    4.1046e00,
-                    4.1046e00,
-                    9.3440e-02,
-                    7.0514e-01,
-                    1.3841e00,
-                    4.2974e00,
-                    2.5323e-02,
-                    2.3554e-02,
-                    2.6481e00,
-                    2.1868e00,
-                    1.0653e00,
-                    2.4199e-01,
-                    4.6566e-01,
-            ]
+            [2.2256e-01, 8.1196e-02, 2.2194e-01, 2.2358e-01, 4.9985e-01, 4.9998e-01,
+             1.7997e-01, 4.8923e-01, 1.8282e-01, 2.0630e+02, 5.9607e-02, 7.0683e+00,
+             7.0683e+00, 1.3641e-01, 7.6855e-01, 1.3493e+00, 5.4691e+00, 3.9776e-02,
+             4.7499e-02, 2.2869e+00, 2.1908e+00, 1.5901e+00, 2.2494e-01, 4.9910e-01]
         )
         return (state - avgs) / stds
 
@@ -841,6 +799,7 @@ class KirbyLearningController(controller.Controller):
             ]
 
             new_map, attack_effects = self.analyse_knoledge(knowledge)
+            # self.all_states.append(new_map.tolist())
             new_map = self.normalize_state(new_map)
 
             my_tile = knowledge.visible_tiles[knowledge.position]
@@ -896,6 +855,7 @@ class KirbyLearningController(controller.Controller):
             self.actions[choice_idx] += 1
             self.prev_actions.append(choice_idx)
             self.states.append(new_map)
+
 
             return policies[choice_idx](my_position, my_direction)
 
@@ -968,7 +928,7 @@ class KirbyLearningController(controller.Controller):
             color="red",
         )
         plt.show()
-        plt.savefig(os.path.join("plots", f"all_rounds_{game_no}.png"))
+        plt.savefig(os.path.join("plots1", f"all_rounds_{game_no}.png"))
 
     def reset(self, game_no: int, arena_description: arenas.ArenaDescription) -> None:
         global DISCOUNT_FACTOR, EPSILON
@@ -982,7 +942,7 @@ class KirbyLearningController(controller.Controller):
                 self.actor_optimizer.load_state_dict(checkpoint["actor_optimizer"])
                 self.critic_A.load_state_dict(checkpoint["critic"])
                 self.critic_B.load_state_dict(self.critic_A.state_dict())
-                self.critic_optimizer.load_state_dict(checkpoint["optimizer"])
+                self.critic_optimizer.load_state_dict(checkpoint["critic_optimizer"])
         for g in self.actor_optimizer.param_groups:
             g["lr"] = ACTOR_LR_ARRAY[game_no]
         for g in self.critic_optimizer.param_groups:
@@ -996,7 +956,7 @@ class KirbyLearningController(controller.Controller):
             )
             self.actions_count.append(np.cumsum(self.actions / self.actions.sum()))
             # with open("states.json", "w") as f:
-            #    json.dump(self.states, f)
+            #    json.dump(self.all_states, f)
 
         arena = Arena.load(arena_description.name)
         self.terrain = arena.terrain
@@ -1010,7 +970,7 @@ class KirbyLearningController(controller.Controller):
                 "critic": self.critic_A.state_dict(),
                 "critic_optimizer": self.critic_optimizer.state_dict(),
             }
-            torch.save(checkpoint, os.path.join("weights", f"weights{game_no}.pth"))
+            torch.save(checkpoint, os.path.join("weights2", f"weights{game_no}.pth"))
 
         """checkpoint2_freq = 10
         if game_no % checkpoint2_freq == 0 and game_no:

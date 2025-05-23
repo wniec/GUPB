@@ -33,8 +33,8 @@ CONFIGURATION = {
         random.RandomController("Alice"),
         camperbot.CamperBotController("Camper"),
         kim_dzong_neat_jr.KimDzongNeatJuniorController(),
-        kirby_learning.KirbyLearningController("KirbyLearning"),
-        # kirby.KirbyController("Kirby"),
+        # kirby_learning.KirbyLearningController("KirbyLearning"),
+        kirby.KirbyController("Kirby"),
         norgul.NorgulController("Norgul"),
         reinforced_rogue.ReinforcedRogueController("ReinforcedRogue"),
         garek.GarekController("Garek"),
@@ -47,7 +47,7 @@ CONFIGURATION = {
     'start_balancing': False,
     'visualise': False,
     'show_sight': None,
-    "runs_no": kirby_learning.ROUNDS_NO,
+    "runs_no": 100, #kirby_learning.ROUNDS_NO,
     'profiling_metrics': [],
 }
 
